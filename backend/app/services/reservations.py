@@ -1,30 +1,62 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Any, List
-
-async def calculate_monthly_revenue(property_id: str, month: int, year: int, db_session=None) -> Decimal:
+from zoneinfo import ZoneInfo
+from sqlalchemy import text
+async def calculate_monthly_revenue(property_id: str, tenant_id: str, month: int, year: int, db_session=None) -> Decimal:
     """
-    Calculates revenue for a specific month.
+    Calculates revenue for a specific month, adjusted for property timezone.
     """
 
-    start_date = datetime(year, month, 1)
+    property_tz_name = "UTC" # Default fallback
+
+    if db_session:
+        tz_query = text("SELECT timezone FROM properties WHERE id = :pid AND tenant_id = :tid")
+        tz_result = await db_session.execute(tz_query, {"pid": property_id, "tid": tenant_id})
+        row = tz_result.fetchone()
+        if row:
+            property_tz_name = row.timezone
+
+    tz = ZoneInfo(property_tz_name)
+
+    # Create boundaries in the Property's Local Time
+    start_date_local = datetime(year, month, 1, tzinfo=tz)
     if month < 12:
-        end_date = datetime(year, month + 1, 1)
+        end_date_local = datetime(year, month + 1, 1, tzinfo=tz)
     else:
-        end_date = datetime(year + 1, 1, 1)
-        
-    print(f"DEBUG: Querying revenue for {property_id} from {start_date} to {end_date}")
+        end_date_local = datetime(year + 1, 1, 1, tzinfo=tz)
+
+    # Convert to UTC for the Database Query
+    # This ensures a Feb 29 23:30 UTC booking is counted as March 1st if local time is Paris
+    start_date_utc = start_date_local.astimezone(ZoneInfo("UTC"))
+    end_date_utc = end_date_local.astimezone(ZoneInfo("UTC"))
+
+    print(f"DEBUG: Querying revenue for {property_id} ({property_tz_name})")
+    print(f"Local: {start_date_local} to {end_date_local}")
+    print(f"UTC:   {start_date_utc} to {end_date_utc}")
 
     # SQL Simulation (This would be executed against the actual DB)
     query = """
         SELECT SUM(total_amount) as total
         FROM reservations
-        WHERE property_id = $1
-        AND tenant_id = $2
-        AND check_in_date >= $3
-        AND check_in_date < $4
+        WHERE property_id = :pid
+        AND tenant_id = :tid
+        AND check_in_date >= :start
+        AND check_in_date < :end
     """
-    
+
+    if db_session:
+        result = await db_session.execute(text(query), {
+            "pid": property_id,
+            "tid": tenant_id,
+            "start": start_date_utc,
+            "end": end_date_utc
+        })
+        row = result.fetchone()
+        # Use Decimal(str()) to fix the "few cents off" floating point bug
+        return Decimal(str(row.total or '0.00'))
+
+
     # In production this query executes against a database session.
     # result = await db.fetch_val(query, property_id, tenant_id, start_date, end_date)
     # return result or Decimal('0')
