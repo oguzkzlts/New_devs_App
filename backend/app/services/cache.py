@@ -8,13 +8,14 @@ redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:63
 
 async def get_revenue_summary(property_id: str, tenant_id: str) -> Dict[str, Any]:
     """
-    Fetches revenue summary, utilizing caching to improve performance.
+    Fetches revenue summary with strict tenant-scoped caching.
     """
-    cache_key = f"revenue:{property_id}"
+    cache_key = f"revenue:{tenant_id}:{property_id}"
     
     # Try to get from cache
     cached = await redis_client.get(cache_key)
     if cached:
+        print(f"DEBUG: Cache Hit for {cache_key}")
         return json.loads(cached)
     
     # Revenue calculation is delegated to the reservation service.
